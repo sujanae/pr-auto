@@ -12,5 +12,6 @@ jobs:
     with:
       base_branches: '["develop"]'   # add more, e.g. '["develop","release/*"]' not glob-aware: list exact names
       title_prefix: 'pr-auto'
+      default_mentions: '["Thamarai-selvan-G-Noukha"]'   # GitHub logins always tagged
     secrets:
       TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}   # or `secrets: inherit` with an org-level secret

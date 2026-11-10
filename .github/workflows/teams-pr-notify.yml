@@ -11,13 +11,17 @@ on:
         type: string
         default: '["develop"]'
       title_prefix:
-        description: 'Text shown before the PR title (e.g. project name)'
+        description: 'Project title shown on the card (defaults to the repo name)'
         type: string
         default: ''
       mention_text:
         description: 'Optional extra line in the card (e.g. "@reviewers")'
         type: string
         default: ''
+      default_mentions:
+        description: 'JSON array of GitHub logins always tagged (e.g. ["octocat"])'
+        type: string
+        default: '[]'
     secrets:
       TEAMS_WEBHOOK_URL:
         required: true
@@ -32,6 +36,7 @@ jobs:
           WEBHOOK: ${{ secrets.TEAMS_WEBHOOK_URL }}
           # Passed via env, never inlined in the script: PR titles are untrusted input.
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           PR_NUM: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -41,21 +46,34 @@ jobs:
           REPO: ${{ github.repository }}
           PREFIX: ${{ inputs.title_prefix }}
           EXTRA: ${{ inputs.mention_text }}
+          REVIEWERS: ${{ toJSON(github.event.pull_request.requested_reviewers.*.login) }}
+          DEFAULTS: ${{ inputs.default_mentions }}
+          # Repo/org variable, e.g. {"octocat":{"name":"Jane Doe","email":"jane@corp.com"}}
+          # Kept out of git so emails are not public.
+          USER_MAP: ${{ vars.TEAMS_USER_MAP || '{}' }}
         run: |
           [ "$PR_DRAFT" = "true" ] && { echo "draft PR, skip"; exit 0; }
+          # one-line description: first non-empty line of the PR body, else the PR title
+          desc=$(printf '%s\n' "$PR_BODY" | grep -m1 -v '^[[:space:]]*$' | cut -c1-200 || true)
           payload=$(jq -n \
-            --arg title "${PREFIX:+$PREFIX · }PR #$PR_NUM: $PR_TITLE" \
-            --arg body "**$PR_AUTHOR** wants to merge \`$PR_HEAD\` → \`$PR_BASE\` in **$REPO**" \
-            --arg extra "$EXTRA" --arg url "$PR_URL" '
-            {type:"message", attachments:[{
+            --arg project "${PREFIX:-$REPO}" --arg desc "${desc:-$PR_TITLE}" \
+            --arg extra "$EXTRA" --arg url "$PR_URL" \
+            --argjson map "$USER_MAP" --argjson rev "$REVIEWERS" --argjson def "$DEFAULTS" '
+            # tag only logins found in the map (need a Teams email to mention)
+            ([$rev[], $def[]] | unique | map(select($map[.] != null)) | map($map[.])) as $tags
+            | {type:"message", attachments:[{
               contentType:"application/vnd.microsoft.card.adaptive", contentUrl:null,
               content:{
                 "$schema":"http://adaptivecards.io/schemas/adaptive-card.json",
                 type:"AdaptiveCard", version:"1.4",
                 body:([
-                  {type:"TextBlock", size:"Medium", weight:"Bolder", wrap:true, text:$title},
-                  {type:"TextBlock", wrap:true, text:$body}
-                ] + (if $extra == "" then [] else [{type:"TextBlock", wrap:true, text:$extra}] end)),
-                actions:[{type:"Action.OpenUrl", title:"Review PR", url:$url}]
+                  {type:"TextBlock", size:"Medium", weight:"Bolder", wrap:true, text:$project},
+                  {type:"TextBlock", wrap:true, text:$desc}
+                ]
+                + (if $extra == "" then [] else [{type:"TextBlock", wrap:true, text:$extra}] end)
+                + (if ($tags|length) == 0 then [] else
+                    [{type:"TextBlock", wrap:true, text:("Review: " + ($tags | map("<at>\(.name)</at>") | join(", ")))}] end)),
+                actions:[{type:"Action.OpenUrl", title:"Open PR", url:$url}],
+                msteams:{entities:($tags | map({type:"mention", text:"<at>\(.name)</at>", mentioned:{id:.email, name:.name}}))}
               }}]}')
           curl -fsS --retry 3 -X POST -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK"
