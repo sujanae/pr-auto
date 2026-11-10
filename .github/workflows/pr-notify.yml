@@ -1,0 +1,16 @@
+# Per-project caller. Copy this file into any repo; edit only the `with:` block.
+name: PR notify
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+jobs:
+  teams:
+    # Same repo for this sample; in other repos use: <org>/.github/.github/workflows/teams-pr-notify.yml@main
+    uses: ./.github/workflows/teams-pr-notify.yml
+    with:
+      base_branches: '["develop"]'   # add more, e.g. '["develop","release/*"]' not glob-aware: list exact names
+      title_prefix: 'pr-auto'
+    secrets:
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}   # or `secrets: inherit` with an org-level secret
