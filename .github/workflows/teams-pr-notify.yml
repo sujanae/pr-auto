@@ -36,12 +36,9 @@ jobs:
           WEBHOOK: ${{ secrets.TEAMS_WEBHOOK_URL }}
           # Passed via env, never inlined in the script: PR titles are untrusted input.
           PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           PR_NUM: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_HEAD: ${{ github.event.pull_request.head.ref }}
-          PR_BASE: ${{ github.base_ref }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
           REPO: ${{ github.repository }}
           PREFIX: ${{ inputs.title_prefix }}
@@ -53,26 +50,27 @@ jobs:
           USER_MAP: ${{ vars.TEAMS_USER_MAP || '{}' }}
         run: |
           [ "$PR_DRAFT" = "true" ] && { echo "draft PR, skip"; exit 0; }
-          # one-line description: first non-empty line of the PR body, else the PR title
-          desc=$(printf '%s\n' "$PR_BODY" | grep -m1 -v '^[[:space:]]*$' | cut -c1-200 || true)
           payload=$(jq -n \
-            --arg project "${PREFIX:-$REPO}" --arg desc "${desc:-$PR_TITLE}" \
+            --arg project "${PREFIX:-$REPO}" --arg desc "$PR_TITLE" \
+            --arg author "$PR_AUTHOR" \
             --arg extra "$EXTRA" --arg url "$PR_URL" \
             --argjson map "$USER_MAP" --argjson rev "$REVIEWERS" --argjson def "$DEFAULTS" '
+            ($map[$author].name // $author) as $who |
             # tag only logins found in the map (need a Teams email to mention)
-            ([$rev[], $def[]] | unique | map(select($map[.] != null)) | map($map[.])) as $tags
-            | {type:"message", attachments:[{
+            ([$rev[], $def[]] | unique | map(select($map[.] != null)) | map($map[.])) as $tags |
+            {type:"message", attachments:[{
               contentType:"application/vnd.microsoft.card.adaptive", contentUrl:null,
               content:{
                 "$schema":"http://adaptivecards.io/schemas/adaptive-card.json",
                 type:"AdaptiveCard", version:"1.4",
                 body:([
-                  {type:"TextBlock", size:"Medium", weight:"Bolder", wrap:true, text:$project},
-                  {type:"TextBlock", wrap:true, text:$desc}
+                  {type:"TextBlock", size:"Medium", weight:"Bolder", wrap:true, text:("Project: " + $project)},
+                  {type:"TextBlock", wrap:true, text:("**Change:** " + $desc)},
+                  {type:"TextBlock", wrap:true, spacing:"None", text:("**Raised by:** " + $who)}
                 ]
                 + (if $extra == "" then [] else [{type:"TextBlock", wrap:true, text:$extra}] end)
                 + (if ($tags|length) == 0 then [] else
-                    [{type:"TextBlock", wrap:true, text:("Review: " + ($tags | map("<at>\(.name)</at>") | join(", ")))}] end)),
+                    [{type:"TextBlock", wrap:true, spacing:"None", text:("**Review:** " + ($tags | map("<at>\(.name)</at>") | join(", ")))}] end)),
                 actions:[{type:"Action.OpenUrl", title:"Open PR", url:$url}],
                 msteams:{entities:($tags | map({type:"mention", text:"<at>\(.name)</at>", mentioned:{id:.email, name:.name}}))}
               }}]}')
